@@ -18,7 +18,7 @@ You generate an API key on https://platform.openai.com/home and buy credits for 
 These credits are limited, because these models are really powerful and can't be free to use. 
 Some people might say this shouldn't be paid (and I agree), but that is the only way you can have the most realistic experience possible.
 
-One cycle (arrival or departure) with full ATC coverage is between €1,- and €1,60.
+One cycle (arrival or departure) with full ATC coverage is between €0,50,- and €1,60.
 
 # Current support
 
