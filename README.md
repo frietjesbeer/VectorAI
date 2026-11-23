@@ -5,6 +5,7 @@ This is what you hope it is, a next level AI ATC addon for GeoFS. I have worked 
 # What are the requirements for using this addon?
 
 - Tampermonkey or another script manager installed
+- A working microphone, text is not supported
 - An OpenAI account, you can create one at https://platform.openai.com/home
 - API credits, these can be bought on the same website
 - An API key, you paste it into the UI of VectorAI and it fires up
