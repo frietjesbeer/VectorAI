@@ -1,4 +1,1 @@
-*.html linguist-documentation
-*.css  linguist-documentation
-*.py   linguist-vendored
-*.json linguist-vendored
+VectorAI.js linguist-generated=false linguist-detectable=true
