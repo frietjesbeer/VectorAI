@@ -1,1 +1,2 @@
-VectorAI.js linguist-detectable=true
+VectorAI.js linguist-language=JavaScript
+*.js linguist-detectable=true
