@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VectorAI
 // @namespace    https://github.com/frietjesbeer
-// @version      1.6.9
+// @version      1.7.0
 // @description  AI air traffic control for GeoFS: a reasoning AI controller with full situational awareness, backed by computed routes, vectors, SIDs, frequencies and a safety checker.
 // @match        https://www.geo-fs.com/geofs.php*
 // @match        https://geo-fs.com/geofs.php*
@@ -24,7 +24,7 @@
   // Real page window (GeoFS lives here). With @grant, `window` is Tampermonkey's sandbox.
   const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
 
-  const VERSION = '1.6.9';
+  const VERSION = '1.7.0';
   const LS_KEY = 'aiAtc.settings.v1';
   const TICK_MS = 500;
   const LOG_MAX = 300;
@@ -532,6 +532,18 @@
       const pop = () => { const top = heap[0]; const last = heap.pop(); if (heap.length) { heap[0] = last; let i = 0; for (;;) { const l = 2 * i + 1, r = l + 1; let mm = i; if (l < heap.length && heap[l][0] < heap[mm][0]) mm = l; if (r < heap.length && heap[r][0] < heap[mm][0]) mm = r; if (mm === i) break; [heap[mm], heap[i]] = [heap[i], heap[mm]]; i = mm; } } return top; };
       const dirOf = (a, b) => toDeg(Math.atan2(nodes[b][0] - nodes[a][0], nodes[b][1] - nodes[a][1]));
       const turn = (h1, h2) => Math.abs(((h2 - h1 + 540) % 360) - 180);
+      const sturn = (h1, h2) => ((h2 - h1 + 540) % 360) - 180;
+      const cuspPen = (hIn, u, to, e2) => {
+        const h1 = dirOf(u, to), entry = sturn(hIn, h1);
+        let nx = null, bt = 999;
+        for (const x of adj[to]) {
+          if (x.e === e2 || edges[x.e].name !== edges[e2].name) continue;
+          const tt = turn(h1, dirOf(to, x.to)); if (tt < bt) { bt = tt; nx = x; }
+        }
+        if (!nx) return 0;
+        const bend = sturn(h1, dirOf(to, nx.to));
+        return Math.abs(bend) >= 4 && Math.sign(bend) !== Math.sign(entry) ? 3000 : 0;
+      };
       const se = edges[from.e];
       // leaving the start edge towards b (state 2e) or towards a (2e+1); against the nose: only as a last resort
       [[2 * from.e, se.a, se.b, (1 - from.t) * se.len], [2 * from.e + 1, se.b, se.a, from.t * se.len]].forEach(([st, a, b, d]) => {
@@ -551,7 +563,12 @@
           const tr = !ed.name ? 0 : turn(hIn, dirOf(u, to));
           if (tr > 150) continue;                                   // no reversal
           const c = costOf ? costOf(edges[e2], u, to, e2) : 1;
-          const nd = d + (typeof c === 'number' ? edges[e2].len * c : edges[e2].len * c[0] + c[1]);
+          let nd = d + (typeof c === 'number' ? edges[e2].len * c : edges[e2].len * c[0] + c[1]);
+          // a sharp corner into a curved connector that bends the other way is a cusp no aircraft can fly
+          // (EHAM A27 entered southbound from A: right 95° into a curve that turns left — v1.7.0)
+          if (tr > 70 && ed.name && edges[e2].name && cuspPen(hIn, u, to, e2)) continue;
+          // more than ~100° at one corner between two taxiways: only where nothing else goes
+          if (tr > 100 && ed.name && edges[e2].name && ed.name !== edges[e2].name) nd += 3000;
           const s2 = 2 * e2 + (edges[e2].a === u ? 0 : 1);
           if (nd < distTo[s2]) { distTo[s2] = nd; prev[s2] = st; push(nd, s2); }
         }
@@ -1145,7 +1162,8 @@
   //   The script is its instrument panel and safety net: it measures, computes routes/vectors/SIDs,
   //   detects situations worth a look, and checks every clearance before it is spoken.
   // ---------------------------------------------------------------------------
-  const EHAM_CLIMB_LADDER = [6000, 10000, 16000, 24000];
+  // Departure: one climb (FL160), then Amsterdam Radar straight to the cruise level (no step climbs, v1.7.0)
+  const EHAM_CLIMB_LADDER = [6000, 16000];
   let ctl = null;
 
   // COM1 radio: only the unit on the active frequency hears the pilot, and the pilot only hears that unit.
@@ -1291,7 +1309,7 @@
   }
   function taxiBias(kind, dir) {
     if (PK && PK.taxiBias) return PK.taxiBias(kind, dir);
-    const avoid = kind === 'out' ? (dir === 'north' ? ['A', 'Q'] : ['B']) : (dir === 'north' ? ['B', 'Q'] : ['A', 'B']);
+    const avoid = kind === 'out' ? (dir === 'north' ? ['Q'] : ['B']) : (dir === 'north' ? ['B', 'Q'] : ['A', 'B']);
     return (e) => {
       let c = 1;
       if (e.name && avoid.includes(e.name)) c *= 5;
@@ -1461,6 +1479,12 @@
         return h.includes(head(a.tw)[0]) && h.includes(head(b.tw)[0]);
       });
     }
+    // a short cross-over between two parallel main taxiways is not said: "A, A25, B" is "A, B" (KLM695 EHAM, v1.7.0)
+    if (PK.dropCrossovers) kept = kept.filter((x, i) => {
+      const a = kept[i - 1], b = kept[i + 1];
+      return !(x.tw && a && b && a.tw && b.tw && /^[A-Z]$/.test(a.tw) && /^[A-Z]$/.test(b.tw) && a.tw !== b.tw &&
+        /^[A-Z]\d+$/.test(x.tw) && [a.tw, b.tw].includes(x.tw[0]) && x.len < 200);
+    });
     const out = [];
     kept.forEach((x) => {
       const prev = out[out.length - 1];
@@ -2547,12 +2571,31 @@
       ctl.unit = unit; ctl.checkedIn = true;
     }
     const di = destinationFrom(a);
-    if (!ctl.taxi) pickDepRunway(di);
+    // the pilot asks for another departure runway ("any chance of 36L?"): approved when it is in use now, or in use in
+    // this configuration (BAS forecast window) and usable (wind, night rules, not the landing strip) — KLM695 was refused 36L
+    if (a.runway) {
+      const want = String(a.runway).toUpperCase().replace(/\s+/g, '').replace(/^RWY|^RUNWAY/, '');
+      const w = rwyState.metarWind || (state.telemetry && state.telemetry.wind) || null;
+      const bas = typeof basNow === 'function' ? basNow() : null;
+      const strip = (d) => (STRIP_NAMES.find((pr) => pr.includes(d)) || [d]);
+      const why = !AP || !AP.runways[want] ? 'unknown runway'
+        : rwyState.arr.some((r) => strip(r).includes(want)) ? `runway ${want} is the landing runway`
+          : !SIDS[want] && !(PK.pickDepRunway) ? 'no departures (no SIDs) from that runway'
+          : PK.icao === 'EHAM' && !runwayAllowed(want, 'dep', amsHour()) ? 'not used for departures now'
+            : rwyState.arr.some((r) => strip(r).includes(want)) ? `runway ${want} is the landing runway`
+              : !windOk(want, w) ? 'the wind does not allow it'
+                : !(rwyState.dep.includes(want) || (bas && bas.dep.includes(want)) || skyObs.some((o) => o.kind === 'dep' && o.rwy === want)) ? `runway ${want} is not in use for departures now (in use: ${rwyState.dep.join(', ')})` : null;
+      if (why) return { requested_runway: want, approved: false, reason: why, departure_runway: settings.depRwy, note: 'Tell the pilot briefly ("negative, <reason>"); the clearance already given stays.' };
+      settings.depRwy = want; ctl.rwyReq = want;
+      if (PK.pickDepRunway) { /* a pack hook picks from rwyState.dep: make sure the requested runway is in it */ if (!rwyState.dep.includes(want)) rwyState.dep.push(want); }
+      if (ctl.taxi && !state.hasFlown) { ctl.taxi = null; ctl.taxiVia = null; }
+    } else if (!ctl.taxi && !(ctl.rwyReq && ctl.rwyReq === settings.depRwy)) pickDepRunway(di);
     const sid = sidFor(di);
     const sq = ctl.squawk || newSquawk();
     ctl.pendingIfr = { dest: (di && di.name) || a.destination || 'destination', destInfo: di, sid, squawk: sq };
     const route = sid ? `${sayProc(sid)} departure` : 'radar vectors';
     return {
+      ...(a.runway ? { requested_runway: settings.depRwy, approved: true, note: 'Give the amended clearance in full (same squawk), e.g. "runway three six left approved, cleared to <dest>, <SID> departure, runway three six left, climb ..., squawk ...".' } : {}),
       destination: ctl.pendingIfr.dest, departure_runway: settings.depRwy, sid: sid || 'radar vectors', initial_climb: shortAlt(PK.initialClimbFt || 6000), squawk: sq,
       departure_frequency: depFreqFor(sid),
       phrase: PK.clrPhrase ? PK.clrPhrase({ dest: ctl.pendingIfr.dest, sid, sq }) : `cleared to ${ctl.pendingIfr.dest}, ${route}, runway ${sayRwy(settings.depRwy)}, climb ${sayAlt(PK.initialClimbFt || 6000)}, squawk ${sayDigits(sq)}`,
@@ -2679,6 +2722,14 @@
     // a crossing goes to Tower ~10-15 s before the hold, not on the readback of the taxi clearance (UAE1, EGLL)
     if (d.action === 'transmit' && s.handoff_to === 'TWR' && ctl.unit === 'GND' && t && t.onGround && ctl.xing && !ctl.xing.cleared && !approachingCrossing(t))
       errs.push(`not yet: Ground keeps the aircraft until it is about 10-15 s from the hold short of runway ${ctl.xing.rwy} — the script calls you then; leave out "contact ..." and handoff_to`);
+    // one climb per unit: no second, higher level seconds after the first one (KLM695 EHAM: FL100 then FL160 16 s later,
+    // FL240 then FL380 17 s later) — unless the pilot asked for it
+    {
+      const na = num(s.cleared_altitude_ft), heard = trigger && trigger.type === 'pilot' ? String(trigger.transcript || trigger.text || '') : '';
+      if (d.action === 'transmit' && !arrival && t && !t.onGround && na !== null && ctl.clearedAlt && na > ctl.clearedAlt + 100 && ctl.altUnit === ctl.unit &&
+        ctl.altAt && Date.now() - ctl.altAt < 120000 && (t.altFt ?? 0) < ctl.clearedAlt - 2000 && !/\b(higher|request\w*\W+(\w+\W+){0,2}(climb|flight level|level))\b/i.test(heard))
+        errs.push(`no second climb now: you cleared ${shortAlt(ctl.clearedAlt)} ${Math.round((Date.now() - ctl.altAt) / 1000)} s ago and the aircraft is still well below it — one climb per unit; a correct readback gets silence`);
+    }
     if (d.action === 'transmit' && /\bstop climb\b/i.test(d.text || '') && /\bclimb (flight level|altitude|to)\b/i.test((d.text || '').replace(/stop climb[^,.]*/i, '')))
       errs.push('"stop climb" and a new climb in one transmission contradict each other — give only the new level');
     if (d.action === 'transmit' && s.handoff_to && s.handoff_to !== 'none' && UNITS[s.handoff_to] && t && !t.onGround && trigger && trigger.type === 'pilot' && !ctl.checkedIn && (ctl.unit === 'DEP' || ctl.unit === 'ACC') && s.handoff_to !== ctl.unit && !ctl.emergency)
@@ -2844,6 +2895,8 @@
       out = out.replace(/\s+([,.])/g, '$1').replace(/,\s*,/g, ',').replace(/,\s*\./g, '.');
       ctl.hoText = /[.!?]$/.test(out) ? out : out + '.';
     }
+    // "Amsterdam Radar,. Confirm …" (station name inserted before a full stop) → "Amsterdam Radar, confirm …"
+    out = out.replace(/,\s*\.\s*([A-Za-z])/g, (m, c) => ', ' + c.toLowerCase()).replace(/,\s*\.\s*$/, '.');
     if (!/[.!?]$/.test(out)) out += '.';
     return out;
   }
@@ -2893,7 +2946,7 @@
     if (s.backtrack !== undefined && s.backtrack !== null) ctl.backtrack = !!s.backtrack;
     if (s.lineup) ctl.lineup = true;
     if (s.takeoff_cleared) { ctl.takeoff = true; ctl.lineup = true; ctl.rto = false; ctl.pendingRTO = 0; }
-    if (num(s.cleared_altitude_ft) !== null) { const na = Math.round(s.cleared_altitude_ft / 100) * 100; if (na !== ctl.clearedAlt) ctl.altAt = now; ctl.clearedAlt = na; }
+    if (num(s.cleared_altitude_ft) !== null) { const na = Math.round(s.cleared_altitude_ft / 100) * 100; if (na !== ctl.clearedAlt) { ctl.altAt = now; ctl.altUnit = ctl.unit; } ctl.clearedAlt = na; }
     if (num(s.heading) !== null) {
       ctl.prevVecHdg = ctl.vecHdg === undefined ? null : ctl.vecHdg; ctl.vecHdg = norm360(s.heading + MAG_VAR); ctl.vecAt = now; ctl.direct = null; ctl.devSince = 0;
       const vp = ctl.arrival ? vectorPlan(t) : null;
@@ -3100,7 +3153,10 @@
     }
 
     // Pilot still on the previous frequency after a handoff
-    if (ctl.prevUnit && !ctl.checkedIn && ctl.handoffAt && !ctl.nudged && now - ctl.handoffAt > (ctl.autoSwitch ? 30000 : 60000) && pilotHears(ctl.prevUnit)) {
+    // not from Delivery ("contact Ground when ready for push-back": the pilot calls when HE is ready), and not within
+    // 2 minutes of the pilot reading the new frequency back (he is switching) — KLM695 got "contact Ground" twice
+    if (ctl.prevUnit && ctl.prevUnit !== 'DEL' && !ctl.checkedIn && ctl.handoffAt && !ctl.nudged && now - ctl.handoffAt > (ctl.autoSwitch ? 30000 : 60000) &&
+      !(ctl.freqRbAt && ctl.freqRbAt > ctl.handoffAt && now - ctl.freqRbAt < 120000) && pilotHears(ctl.prevUnit)) {
       ctl.nudged = true;
       const f = UNITS[ctl.unit].freq;
       say(`${spokenCallsign()}, contact ${unitName()} ${sayFreq(f)}.`, true);
@@ -3355,7 +3411,8 @@
     // whole words only: "Speedbird" made every BA call urgent (EGLL v1.6.4)
     const urgent = /\b(mayday|pan.?pan|emergenc\w*|engine|fire|smoke|go(ing)?.?around|reject\w*|abort\w*|medical|bird ?strike|birds?)\b/i.test(transcript || '');
     // Pilot should have switched by himself (2000 ft / after vacating) but called the old unit: send him on
-    if (tuned && ctl.autoSwitch && tuned === ctl.prevUnit && tuned !== ctl.unit && !ctl.checkedIn && !urgent) {
+    // once only: after the reminder the pilot's readback of it gets silence (KLM695: "contact Departure" twice)
+    if (tuned && ctl.autoSwitch && !ctl.nudged && tuned === ctl.prevUnit && tuned !== ctl.unit && !ctl.checkedIn && !urgent) {
       ctl.nudged = true;
       say(`${spokenCallsign()}, contact ${unitName()} ${sayFreq(UNITS[ctl.unit].freq)}.`, true, pfreq);
       return;
@@ -3374,7 +3431,7 @@
         return;
       }
       if (!pilotNeedsAnswer(transcript)) {
-        ctl.awaitingReadback = false;
+        ctl.awaitingReadback = false; ctl.freqRbAt = Date.now();
         emit('ATC_INFO', { message: 'Readback of the frequency change — no reply (switch to ' + UNITS[ctl.unit].freq + ')' });
         return;
       }
@@ -3382,13 +3439,13 @@
     }
     // Readback of a channel change inside the same unit (Ground → Ground 121.905)
     if (ctl.expectFreq && normFreq(com.active) !== ctl.expectFreq && tuned === ctl.unit && Date.now() - ctl.handoffAt < 90000 && !urgent) {
-      ctl.awaitingReadback = false;
+      ctl.awaitingReadback = false; ctl.freqRbAt = Date.now();
       emit('ATC_INFO', { message: 'Readback of the frequency change — no reply (switch to ' + ctl.expectFreq + ')' });
       return;
     }
     if (ctl.expectFreq && normFreq(com.active) === ctl.expectFreq) ctl.expectFreq = null;
     if (tuned && tuned === ctl.unit && !ctl.prevUnit && !ctl.checkedIn && ctl.handoffAt && Date.now() - ctl.handoffAt < 90000 && !sameChannel(pfreq, UNITS[ctl.unit].freq) && !urgent && !pilotNeedsAnswer(transcript)) {
-      ctl.awaitingReadback = false;
+      ctl.awaitingReadback = false; ctl.freqRbAt = Date.now();
       emit('ATC_INFO', { message: 'Readback of the frequency change — no reply (switch to ' + UNITS[ctl.unit].freq + ')' });
       return;
     }
@@ -3554,6 +3611,18 @@
     const freeOf0 = (list2, used) => list2.filter((d) => !used.some((u) => stripOf(u).includes(d)));
     const ba0 = bas ? valid(bas.arr, 'arr') : [], bd0 = bas ? valid(bas.dep, 'dep') : [];
     if (live && live.old && ba0.length && bd0.length) { live = null; la.length = 0; ld.length = 0; }
+    // a thin live picture does not drop a runway the BAS forecast has in use: in the first 15 minutes of watching, or when
+    // it was seen at least once in the last 20 minutes, the forecast runway stays (KLM695: 36L in use before and after the
+    // clearance, but only 36C seen in the first minute — clearance and the pilot's request got 36C)
+    if (live && !live.old && bas) {
+      const young = !skyFirst || Date.now() - skyFirst < 15 * 60000;
+      const seen = (kind, d) => skyObs.some((o) => o.kind === kind && o.rwy === d);
+      // only a runway of the same flow (36L beside 36C), never one that contradicts what is seen (24 while 06 departs)
+      const hdgOf = (d) => (AP.runways[d] ? AP.runways[d].hdg : null);
+      const sameFlow = (d, base) => base.every((b) => hdgOf(b) !== null && hdgOf(d) !== null && Math.abs(((hdgOf(d) - hdgOf(b) + 540) % 360) - 180) <= 60);
+      const addFrom = (list, base, other, kind) => { if (!base.length) return; list.forEach((d) => { if (!base.includes(d) && !other.some((u) => stripOf(u).includes(d)) && sameFlow(d, base) && (young || seen(kind, d))) base.push(d); }); };
+      addFrom(bd0, ld, la, 'dep'); addFrom(ba0, la, ld, 'arr');
+    }
     const ba = bas ? freeOf0(ba0, ld) : [], bd = bas ? freeOf0(bd0, la) : [];
     if ((la.length || ld.length) && (la.length ? true : ba.length) && (ld.length ? true : bd.length)) {
       // live traffic for what is seen, the BAS forecast for the other half
@@ -3601,7 +3670,7 @@
   function applyRunways() {
     const lockDep = ctl && !state.hasFlown && (ctl.taxi || ctl.lineup);
     const lockArr = ctl && (ctl.approachCleared || (ctl.arrival && ctl.unit === 'APP' && ctl.checkedIn));
-    if (!lockDep && rwyState.dep.length && !rwyState.dep.includes(settings.depRwy)) settings.depRwy = rwyState.dep[0];
+    if (!lockDep && rwyState.dep.length && !rwyState.dep.includes(settings.depRwy) && !(ctl && ctl.rwyReq === settings.depRwy)) settings.depRwy = rwyState.dep[0];
     if (!lockArr && rwyState.arr.length && !rwyState.arr.includes(settings.arrRwy)) settings.arrRwy = rwyState.arr[0];
     if (!lockArr && PK.arrRwyFor && ctl && ctl.arrival) {
       const t = state.telemetry;
@@ -3640,7 +3709,7 @@
 
   // Live runway use from real traffic (OpenSky): aircraft low, aligned with a runway, climbing away or descending in
   const skyObs = [];
-  let skyLast = 0, skyBusy = false;
+  let skyLast = 0, skyBusy = false, skyFirst = 0;
   // Live runway use from Flightradar24's public map feed (origin/destination known, ground rolls included).
   // Order of the array per flight: hex, lat, lon, track, alt ft, speed kt, squawk, radar, type, reg, time, origin, destination, flight, on ground, vs fpm, callsign
   let fr24Fails = 0, skyNext = 0;
@@ -3687,7 +3756,7 @@
   }
   async function pollOpenSky() {
     if (skyBusy || !AP) return;
-    skyBusy = true; skyLast = Date.now();
+    skyBusy = true; skyLast = Date.now(); if (!skyFirst) skyFirst = skyLast;
     try {
       let ok = false;
       if (fr24Fails < 3 || Math.random() < 0.1) {
@@ -3780,7 +3849,7 @@ Delivery: en-route clearance = destination, SID + runway, initial climb FL060, s
 Ground: standard push-back directions per stand (AD 2.EHAM-APDC; the computed advice gives the face direction). Taxi clearances always give the complete route straight away: holding point, runway and every taxiway in order including runway crossings ("taxi to holding point Whiskey one zero runway three six center via Alpha, Alpha two seven"; "... via Bravo, Delta, Whiskey five, cross runway one eight center, Whiskey one three, Victor"). Use the computed route (compulsory routing: outbound north side via B, south side via A and Q). 36L departures are transferred to Ground 121.560 on the way out. Near the holding point: "contact Schiphol Tower one one niner decimal two three zero". RUNWAY IN USE: Ground never clears the crossing of a runway in use — its clearance ends "hold short of runway X", Ground transfers the aircraft to Tower just before it, Tower says "cross runway X, contact Ground <freq>", and Ground then gives the rest of the route. Runways not in use are crossed with Ground's own "cross runway X".
 Tower: line up, takeoff clearance (wind only when 20 kt or more, gusty or changed significantly). Runway 06 departures enter at S1 (passenger) / S10 (cargo): ask whether able to depart from the intersection or require backtrack.
 After takeoff the pilot stays with Tower until passing 2000 ft and then switches to Departure BY HIMSELF — Tower does not transfer him: 121.205 for AMGOD, BERGI, BETUS, DENAG, GORLO, NOPSU, SPIJKERBOOR, VALKO, VOLLA, IDRID, WISPA; 119.055 for all other SIDs. His initial call: "Schiphol Departure, <callsign>, passing two thousand climbing flight level six zero, <SID>".
-Departure: "identified", climb FL100, then higher / transfer to Amsterdam Radar, who climbs to the cruise level; ~100 NM out: "frequency change approved".
+Departure: "identified", ONE climb to flight level one six zero (no step climbs), then transfer to Amsterdam Radar, who climbs straight to the cruise level in one clearance; ~100 NM out: "frequency change approved".
 A departure is NOT an arrival. Never give descent, STARs or approach vectors to a departing/enroute flight unless the pilot asks to return, declares an emergency or diverts — and then first set flight_status accordingly.
 
 ARRIVAL FLOW (only when flight_status is inbound or returning; AIP EHAM AD 2.22)
@@ -3832,7 +3901,7 @@ Pilot: "Schiphol Ground, KLM123, stand D28, request push and start." ATC: "KLM o
 Pilot: "KLM123, request taxi." ATC: "KLM one two three, taxi holding point Sierra seven, runway two four." Pilot reads back → (no reply)
 Near the holding point: ATC: "KLM one two three, contact Schiphol Tower one one niner decimal two three zero." → readback → (no reply)
 Pilot: "Schiphol Tower, KLM123, holding point S7, ready." ATC: "KLM one two three, Schiphol Tower, wind two three zero degrees, one two knots, runway two four, cleared for takeoff."
-Pilot: "Schiphol Departure, KLM123, passing 2000 climbing FL60." ATC: "KLM one two three, Schiphol Departure, identified, climb flight level one hundred." → readback → (no reply)
+Pilot: "Schiphol Departure, KLM123, passing 2000 climbing FL60." ATC: "KLM one two three, Schiphol Departure, identified, climb flight level one six zero." → readback → (no reply)
 Pilot: "Schiphol Arrival, KLM123, FL100, information Bravo." ATC: "KLM one two three, Schiphol Arrival, identified, turn left heading two seven zero, descend altitude three thousand feet, QNH one zero one three."
 Later: "KLM one two three, turn left heading one niner zero" (downwind) … "turn left heading zero niner zero" (base) … "turn left heading zero three zero, cleared ILS approach runway zero six" (intercept) … "contact Schiphol Tower one one niner decimal two three zero".
 Pilot asks a question ("any speed restrictions?") → short factual answer ("no speed restrictions"). Pilot reports something (birds, turbulence) → "roger, thank you" and act only if needed.
@@ -3889,11 +3958,12 @@ First think: fill "assessment" with your reading of the situation (what is happe
   const HELPER_TOOLS = [
     {
       type: 'function', name: 'plan_ifr_clearance',
-      description: 'Plan the IFR clearance for a destination: returns SID, departure runway, initial climb, squawk and the exact clearance phrase.',
+      description: 'Plan the IFR clearance for a destination: returns SID, departure runway, initial climb, squawk and the exact clearance phrase. Also for a pilot\'s request for another departure runway (runway): never refuse such a request yourself — ask this tool.',
       parameters: { type: 'object', properties: {
         destination: { type: 'string', description: 'Destination as said by the pilot, e.g. "Athens".' },
         destination_icao: { type: 'string', description: 'Best ICAO code, e.g. LGAV.' },
         destination_lat: { type: 'number' }, destination_lon: { type: 'number' },
+        runway: { type: 'string', description: 'Only when the pilot REQUESTS a departure runway (e.g. "36L"): the script checks it is usable and in use in this configuration and returns approved true/false with the reason; approved → give the amended clearance with the new SID.' },
       }, required: ['destination'] },
     },
     {
@@ -5909,7 +5979,7 @@ ATC (Final): "easyJet four five Bravo Kilo, turn left heading two three zero, de
   // =====================================================================================================
   const PACKS = {
     EHAM: {
-      icao: 'EHAM', short: 'Schiphol', full: 'Amsterdam Schiphol', city: 'Amsterdam', tz: 'Europe/Amsterdam', approachName: 'Schiphol Approach', minVecFt: 2000, taxiMinSegM: 40,
+      icao: 'EHAM', short: 'Schiphol', full: 'Amsterdam Schiphol', city: 'Amsterdam', tz: 'Europe/Amsterdam', approachName: 'Schiphol Approach', minVecFt: 2000, taxiMinSegM: 40, dropCrossovers: true,
       data: EHAM_DATA,
       DEP_RUNWAYS: EHAM_DEP_RUNWAYS,
       ARR_RUNWAYS: EHAM_ARR_RUNWAYS,
@@ -5939,6 +6009,7 @@ ATC (Final): "easyJet four five Bravo Kilo, turn left heading two three zero, de
       RWY_PREF_NIGHT: EHAM_RWY_PREF_NIGHT,
       HOLD_NAME_OVERRIDE: EHAM_HOLD_NAME_OVERRIDE,
       CLIMB_LADDER: EHAM_CLIMB_LADDER,
+      accDirectCruise: true,
       PROCEDURES: EHAM_PROCEDURES,
     },
     LFPG: {
