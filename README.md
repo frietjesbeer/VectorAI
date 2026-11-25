@@ -1,6 +1,6 @@
 # VectorAI
 
-This is what you hope it is, a next level AI ATC addon for GeoFS. I have worked together with Claude and SayintentionsAI on this projecct and this is the first release.
+This is what you hope it is, a next level AI ATC addon for GeoFS. I have worked together with Claude and SayintentionsAI on this projecct and this is the second release.
 
 # What are the requirements for using this addon?
 
@@ -20,6 +20,10 @@ These credits are limited, because these models are really powerful and can't be
 Some people might say this shouldn't be paid (and I agree), but that is the only way you can have the most realistic experience possible.
 
 One cycle (arrival or departure) with full ATC coverage is between €0,50,- and €1,60.
+
+# Troubelshooting
+
+If you´re having any trouble or ATC is not behaving like it should, press copy log in the bottom of the UI, select the issues tab with this repository and paste the log in the issue. Then just submit the issue and I will use the log to improve the addon.
 
 # Current support
 
