@@ -30,7 +30,9 @@ If you´re having any trouble or ATC is not behaving like it should, press copy 
 VectorAI currently supports EHAM (AMS) and LFPG (CDG) with full coverage. I am working on EGLL (LHR) and EDDF (FRA) for the next major update. Current version is V1.
 
 
-Check out this PDF for instructions on both airports. [EHAM-LFPG-Local-Procedures.pdf](https://github.com/user-attachments/files/35232869/EHAM-LFPG-Local-Procedures.pdf)
+Check out this PDF for instructions on both airports. [VectorAI Pilot Guide for EHAM & LFPG.pdf](https://github.com/user-attachments/files/35510158/VectorAI.Pilot.Guide.for.EHAM.LFPG.pdf)
+The PDF is also in the files list of this repository.
+
 
 
 # User Interface
