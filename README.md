@@ -31,6 +31,7 @@ VectorAI currently supports EHAM (AMS) and LFPG (CDG) with full coverage. I am w
 
 
 Check out this PDF for instructions on both airports. [VectorAI Pilot Guide for EHAM & LFPG.pdf](https://github.com/user-attachments/files/35510158/VectorAI.Pilot.Guide.for.EHAM.LFPG.pdf)
+
 The PDF is also in the files list of this repository.
 
 
